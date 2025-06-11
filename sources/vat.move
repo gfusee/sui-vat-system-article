@@ -14,6 +14,7 @@ const EPaymentsShouldBeEmpty: u64 = 1;
 public struct VATRule has drop {}
 
 public struct VATConfig<phantom T> has store, drop {
+    tax_authority_address: address,
     vat_percent: u64,
 }
 
@@ -79,6 +80,7 @@ public(package) fun register_vat_policies(
         &mut goods_policy,
         &goods_policy_cap,
         VATConfig<Good> {
+            tax_authority_address: ctx.sender(),
             vat_percent: 1_000,
         }
     );
@@ -88,6 +90,7 @@ public(package) fun register_vat_policies(
         &mut services_policy,
         &services_policy_cap,
         VATConfig<Service> {
+            tax_authority_address: ctx.sender(),
             vat_percent: 2_000,
         }
     );
@@ -105,12 +108,25 @@ public(package) fun register_vat_policies(
 public fun pay_vat<T>(
     policy: &mut TransferPolicy<T>,
     request: &mut TransferRequest<T>,
-    payment: Coin<SUI>
+    payment: Coin<SUI>,
+    ctx: &mut TxContext
 ) {
     let paid = request.paid();
-    let vat_to_pay = get_vat_amount_to_pay(policy, paid);
+    let config: &VATConfig<T> = transfer_policy::get_rule(VATRule {}, policy);
+    
+    let vat_to_pay = get_vat_amount_to_pay_internal(config, paid);
 
+    let payment_value = payment.value();
     assert!(payment.value() == vat_to_pay, EWrongVATAmount);
+
+    let receipt = VATReceipt {
+        id: object::new(ctx),
+        policy_id: object::id(policy),
+        bought_item: request.item(),
+        vat_payment_value: payment_value,
+    };
+
+    transfer::transfer(receipt, config.tax_authority_address);
 
     transfer_policy::add_to_balance(VATRule {}, policy, payment);
     transfer_policy::add_receipt(VATRule {}, request);
@@ -205,7 +221,7 @@ public fun get_vat_amount_to_pay<T>(
 ): u64 {
     let config: &VATConfig<T> = transfer_policy::get_rule(VATRule {}, policy);
 
-    paid * config.vat_percent / HUNDRED_PERCENT
+    get_vat_amount_to_pay_internal(config, paid)
 }
 
 public fun confirm_good_purchase(policy: &TransferPolicy<Good>, req: TransferRequest<Good>) {
@@ -263,4 +279,11 @@ public fun destroy_vat_receipt_duplicata(
     let VATReceiptDuplicata { id, .. } = self;
 
     object::delete(id);
+}
+
+fun get_vat_amount_to_pay_internal<T>(
+    config: &VATConfig<T>,
+    paid: u64
+): u64 {
+    paid * config.vat_percent / HUNDRED_PERCENT
 }
